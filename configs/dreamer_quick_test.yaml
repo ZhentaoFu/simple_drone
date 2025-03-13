@@ -1,0 +1,20 @@
+training:
+  batch_size: 8       # ↓ 减少到原值的1/8
+  seq_length: 4       # ↓ 缩短序列长度
+  train_steps: 200    # ↓ 训练总步数减少到1/50
+  save_interval: 50   # ↓ 保存频率提高
+
+model:
+  obs_dim: 29        # 保持与环境一致
+  action_dim: 2      # 保持与环境一致
+  stoch_dim: 8       # ↓ 隐状态维度缩小4倍
+  deter_dim: 64      # ↓ 确定性状态缩小4倍
+  hidden_dim: 128    # ↓ 隐藏层缩小4倍
+  discount: 0.95     # ↓ 缩短奖励传播范围
+  horizon: 5         # ↓ 减少想象步长
+
+env:
+  grid_size: 8        # ↓ 缩小环境尺寸
+  max_steps: 20       # ↓ 缩短单回合步数
+  static_obstacles: 2 # ↓ 减少障碍物数量
+  dynamic_obstacles: 1 # ↓ 减少动态障碍

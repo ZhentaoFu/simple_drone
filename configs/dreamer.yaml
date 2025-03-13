@@ -1,0 +1,20 @@
+training:
+  batch_size: 64
+  seq_length: 16
+  train_steps: 10000
+  save_interval: 1000
+
+model:
+  obs_dim: 29
+  action_dim: 2
+  stoch_dim: 32
+  deter_dim: 256
+  hidden_dim: 512
+  discount: 0.99
+  horizon: 15
+
+env:
+  grid_size: 20
+  max_steps: 100
+  static_obstacles: 5
+  dynamic_obstacles: 2
