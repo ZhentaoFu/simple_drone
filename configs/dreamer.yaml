@@ -18,3 +18,9 @@ env:
   max_steps: 100
   static_obstacles: 5
   dynamic_obstacles: 2
+
+testing:
+  test_episodes: 20           # 测试回合数
+  render_interval: 3          # 渲染间隔（每N回合渲染一次）
+  save_trajectory: true        # 是否保存轨迹图
+  model_path: "dreamer_final.pth"  # 训练模型路径

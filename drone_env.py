@@ -1,4 +1,3 @@
-# drone_env.py
 import numpy as np
 import gym
 from gym import spaces
@@ -35,7 +34,6 @@ class DroneExplorationEnv(gym.Env):
         self.steps = 0
         return self._get_obs()
 
-    # drone_env.py
     def _get_obs(self):
         # 分别生成x和y轴的坐标点
         x_coords = np.linspace(self.drone_pos[0] - self.obs_radius,
