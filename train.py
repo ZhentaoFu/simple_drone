@@ -6,7 +6,7 @@ from torch.nn.modules import loss
 from drone_env import DroneExplorationEnv
 from model import Dreamer
 from torch.utils.data import DataLoader, Dataset
-
+from tqdm import tqdm
 
 class ExperienceDataset(Dataset):
     def __init__(self, capacity=100000):
@@ -16,11 +16,9 @@ class ExperienceDataset(Dataset):
         self.reward_buf = []
 
     def __len__(self):
-        """返回当前存储的经验数量"""
         return len(self.obs_buf)
 
     def __getitem__(self, idx):
-        """支持索引访问"""
         return (
             torch.FloatTensor(self.obs_buf[idx]),
             torch.FloatTensor(self.action_buf[idx]),
@@ -37,86 +35,99 @@ class ExperienceDataset(Dataset):
         self.reward_buf.append(reward)
 
 def load_config():
-    # train.py中load_config函数修改后
     with open("configs/dreamer.yaml", 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
     return config
 
-
 def main():
     config = load_config()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     env = DroneExplorationEnv(config['env'])
-    model = Dreamer(config)
+    model = Dreamer(config).to(device)
     dataset = ExperienceDataset()
-
-    # 定义损失函数
-    mse_loss = nn.MSELoss()
+    
+    # 初始化混合精度训练组件
+    scaler = torch.cuda.amp.GradScaler()
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+    mse_loss = nn.MSELoss()
 
-    for episode in range(config['training']['train_steps']):
+    pbar_epoch = tqdm(range(config['training']['train_steps']), 
+                     desc="Total Training", position=0, dynamic_ncols=True)
+
+    for episode in pbar_epoch:
         obs = env.reset()
-        state = (torch.zeros(1, config['model']['deter_dim']),
-                 torch.zeros(1, config['model']['stoch_dim']))
+        state = (
+            torch.zeros(1, config['model']['deter_dim'], device=device),
+            torch.zeros(1, config['model']['stoch_dim'], device=device)
+        )
 
         # 数据收集阶段
-        for _ in range(config['training']['seq_length']):
+        collect_bar = tqdm(range(config['training']['seq_length']), 
+                          desc=f"Episode {episode} Collecting", position=1, leave=False)
+        for _ in collect_bar:
             with torch.no_grad():
-                action = model.actor(torch.cat(state, dim=-1)).numpy()[0]
+                action = model.actor(torch.cat(state, dim=-1)).cpu().numpy()[0]
             next_obs, reward, done, _ = env.step(action)
             dataset.add_experience(obs, action, reward)
             obs = next_obs
-
+            collect_bar.update(1)
             if done:
                 break
 
         # 模型训练阶段
-        # 修改后的训练循环部分
         if len(dataset) > config['training']['batch_size']:
-            # 创建数据加载器
-            dataloader = DataLoader(
-                dataset,
-                batch_size=config['training']['batch_size'],
-                shuffle=True,
-                drop_last=True,  # 丢弃最后不完整的批次
-            )
+            dataloader = DataLoader(dataset, 
+                                  batch_size=config['training']['batch_size'],
+                                  shuffle=True, 
+                                  num_workers=4,
+                                  pin_memory=True)
 
-            for batch in dataloader:
-                obs_seq, action_seq, reward_seq = batch
+            train_bar = tqdm(dataloader, desc="Training Batches", position=2, leave=False)
+            
+            for batch in train_bar:
+                # 数据转换为适合混合精度的格式
+                obs_seq = batch[0].to(device, non_blocking=True)
+                action_seq = batch[1].to(device, non_blocking=True)
+                reward_seq = batch[2].to(device, non_blocking=True).squeeze(-1)  # 修复维度问题
 
                 # 初始化隐藏状态
                 deter_state = torch.zeros(config['training']['batch_size'],
-                                          config['model']['deter_dim'])
+                                        config['model']['deter_dim'], 
+                                        device=device)
                 stoch_state = torch.zeros(config['training']['batch_size'],
-                                          config['model']['stoch_dim'])
+                                        config['model']['stoch_dim'],
+                                        device=device)
 
-                # 前向传播
-                states, rewards_pred, _ = model.rssm(
-                    obs_seq.float(),
-                    action_seq.float(),
-                    (deter_state, stoch_state)
-                )
+                # 混合精度训练
+                with torch.autocast(device_type=device.type, enabled=True):
+                    states, rewards_pred, _ = model.rssm(
+                        obs_seq.float(),
+                        action_seq.float(),
+                        (deter_state, stoch_state)
+                    )
+                    
+                    # 统一维度
+                    feat = torch.cat(states, dim=-1)
+                    value_pred = model.value_net(feat)
+                    
+                    # 计算损失（自动处理类型转换）
+                    reward_loss = mse_loss(rewards_pred.squeeze(), reward_seq.float())
+                    value_loss = mse_loss(value_pred.squeeze(), reward_seq.float())
+                    total_loss = reward_loss + 0.5 * value_loss
 
-                # 计算世界模型损失
-                reward_loss = mse_loss(rewards_pred.squeeze(), reward_seq.float())
-
-                # 计算价值损失
-                feat = torch.cat(states, dim=-1)
-                value_pred = model.value_net(feat)
-                value_loss = mse_loss(value_pred.squeeze(), reward_seq.float())
-
-                # 总损失
-                total_loss = reward_loss + 0.5 * value_loss  # 调整权重系数
-
-                # 反向传播
+                # 梯度处理
                 optimizer.zero_grad()
-                total_loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)  # 梯度裁剪
-                optimizer.step()
+                scaler.scale(total_loss).backward()
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                scaler.step(optimizer)
+                scaler.update()
+
+                train_bar.set_postfix(loss=total_loss.item())
 
         # 模型保存
         if episode % config['training']['save_interval'] == 0:
             torch.save(model.state_dict(), f"dreamer_{episode}.pth")
-
 
 if __name__ == "__main__":
     main()

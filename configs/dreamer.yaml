@@ -1,8 +1,8 @@
 training:
   batch_size: 64
   seq_length: 16
-  train_steps: 10000
-  save_interval: 1000
+  train_steps: 1000
+  save_interval: 100
 
 model:
   obs_dim: 29
@@ -23,4 +23,4 @@ testing:
   test_episodes: 20           # 测试回合数
   render_interval: 3          # 渲染间隔（每N回合渲染一次）
   save_trajectory: true        # 是否保存轨迹图
-  model_path: "dreamer_final.pth"  # 训练模型路径
+  model_path: "dreamer_900.pth"  # 训练模型路径
